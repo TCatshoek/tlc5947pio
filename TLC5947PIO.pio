@@ -1,0 +1,71 @@
+;
+; Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
+;
+; SPDX-License-Identifier: BSD-3-Clause
+;
+
+.program TLC5947
+.side_set 3
+
+.define public N_TLC 1
+                                        ; TODO: make this dynamic
+    set x, ((N_TLC * 8 * 3) - 1)  side 0b000  ; x holds the amount of packets to shift out before latching
+packetloop:
+    out null, 4         side 0b000  ; Discard useless MSBs
+    set y, 11           side 0b000  ; y counts the bits shifted out before skipping since we have 16 byte values
+bitloop:
+    out pins, 1         side 0b000  ; Shift out one bit, clock low
+    jmp y-- bitloop     side 0b001  ; Count down bits before skipping and jump, clock high
+    jmp x-- packetloop  side 0b000  ; Send next 12 bits if we should not latch yet
+    nop                 side 0b110  ; Latch and blank
+
+
+% c-sdk {
+#include "hardware/clocks.h"
+#define N_TLC5947_CTL_PINS 3
+
+static inline void TLC5947_program_init(PIO pio, uint sm, uint offset, uint clkdiv,
+                                        uint n_tlc, uint data_pin, uint ctl_base_pin ) {
+
+    // We need 4 pins to control the TLC5947
+    // clk, data, latch, and blank
+//    for (uint i = 0; i < N_TLC5947_CTL_PINS; i++){
+//        pio_gpio_init(pio, ctl_base_pin + i);
+//    }
+//
+    pio_gpio_init(pio, data_pin);
+    pio_gpio_init(pio, ctl_base_pin + 0);
+    pio_gpio_init(pio, ctl_base_pin + 1);
+    pio_gpio_init(pio, ctl_base_pin + 2);
+
+    // Set to output pins
+    pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, ctl_base_pin, N_TLC5947_CTL_PINS, true);
+
+    // Get config struct
+    pio_sm_config c = TLC5947_program_get_default_config(offset);
+
+    // Set clk, latch, and blank pins as sideset pins
+    sm_config_set_sideset_pins(&c, ctl_base_pin);
+
+    // Set data pin as out pin
+    sm_config_set_out_pins(&c, data_pin, 1);
+
+    // Set up the output shift,
+    // false to shift out MSB first
+    // true to enable autopull
+    // autopull trigger after shifting out 12*3 bits
+    sm_config_set_out_shift(&c, false, true, 16);
+
+    // We only need input FIFO
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+
+    // Dunno about this stuff yet
+//    int cycles_per_bit = ws2812_T1 + ws2812_T2 + ws2812_T3;
+//    float div = clock_get_hz(clk_sys) / (freq * cycles_per_bit);
+    sm_config_set_clkdiv_int_frac(&c, clkdiv, 0);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
